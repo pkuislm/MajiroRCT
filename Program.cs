@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Reflection.PortableExecutable;
+﻿using System.Diagnostics;
 using System.Text;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
@@ -16,19 +13,25 @@ namespace MajiroRCT
 
             var rctFile = new RCTFile();
 
-            var img = rctFile.OpenRCImage(@"E:\GalGames_Work\OnWork\(秋晴汉化组)私が好きなら「好き」って言って！\workspace\rct\c_d_browser_.rc8");
-            img.Pack();
-            img.Unpack();
-            img.GetImage().SaveAsPng(@"E:\GalGames_Work\OnWork\(秋晴汉化组)私が好きなら「好き」って言って！\workspace\rct\test2.png");
+            if(args.Length < 2)
+            {
+                Console.WriteLine("RCImageTool v0.1.\nUsage: \nExtract: RCImage.exe -e [RCFile]\nPack: RCImage.exe -p [PNGFile]");
+                return;
+            }
 
-            rctFile.RCToPNG(@"E:\GalGames_Work\OnWork\(秋晴汉化组)私が好きなら「好き」って言って！\workspace\rct\c_d_browser.rct");
-            rctFile.RCToPNG(@"E:\GalGames_Work\OnWork\(秋晴汉化组)私が好きなら「好き」って言って！\workspace\rct\c_d_browser_.rc8");
-            rctFile.RCToPNG(@"E:\GalGames_Work\OnWork\(秋晴汉化组)私が好きなら「好き」って言って！\workspace\rct\c_d_browser.rct");
-            
-            Console.WriteLine("Hello, World!");
+            switch(args[0])
+            {
+                case "-e":
+                    rctFile.RCToPNG(args[1]);
+                    break;
+                case "-p":
+                    rctFile.PNGToRC(args[1]);
+                    break;
+                default: 
+                    Console.WriteLine($"Unknown arg: \"{args[0]}\"");
+                    break;
+            }
         }
-
-
     }
 
 
@@ -72,211 +75,261 @@ namespace MajiroRCT
         public byte[]? m_rctRawData;
         public sbyte[]? m_shiftTable;
 
-        public abstract bool OpenFromRCT(ref BinaryReader br, DelegateDoCrypt? crypt);
-        public abstract Image<Rgb24> GetImage();
-        public void Unpack()
+        public abstract bool FromRCT(ref BinaryReader br, DelegateDoCrypt? crypt);
+        public bool FromPixels(byte[] pixels, uint width, uint height)
         {
-            Debug.Assert(m_rctRawData != null);
-            Debug.Assert(m_shiftTable != null);
-            Debug.Assert(m_bpp > 0);
+            m_width = width;
+            m_height = height;
+            m_pixelData = pixels;
+            Pack();
+            return true;
+        }
+
+        public abstract Image<Rgb24> GetImage();
+
+        public abstract byte[] GetRCIamge(DelegateDoCrypt? crypt);
+
+        protected void Unpack()
+        {
+            Trace.Assert(m_rctRawData != null);
+            Trace.Assert(m_shiftTable != null);
+            if (m_rctRawData == null || m_shiftTable == null)
+            {
+                throw new Exception();
+            }
+
             var byteDepth = (int)m_bpp / 8;
             var countMask = 16 + (sbyte)~(8 + ((m_shiftTable.Length >> 5) * 4));
-            var shiftMask = 3 - (m_shiftTable.Length >> 5);
+            var shiftStart = 3 - (m_shiftTable.Length >> 5);
+            var countBase = byteDepth == 1 ? 3 : 1;
 
             m_pixelData = new byte[m_width * m_height * byteDepth];
-            var m_input = new MemoryStream(m_rctRawData);
+            var reader = new MemoryStream(m_rctRawData);
 
-            int data_pos = 0;
-            int eax = 0;
-            int pixels_remaining = m_pixelData.Length;
-            while (pixels_remaining > 0)
+            //Start by reading 1 pixel
+            reader.Read(m_pixelData, 0, byteDepth);
+
+            int dstPos = byteDepth;
+            int pixelRemaining = m_pixelData.Length - byteDepth;
+
+            int cmd;
+            int count;
+            while (pixelRemaining > 0)
             {
-                int count = (eax * byteDepth) + byteDepth;
-                if (count > pixels_remaining)
-                    throw new Exception("Invalid Pixel Data");
-                pixels_remaining -= count;
-
-                if (count != m_input.Read(m_pixelData, data_pos, count))
-                    throw new Exception("Invalid Pixel Data");
-                data_pos += count;
-
-                while (pixels_remaining > 0)
+                cmd = reader.ReadByte();
+                if ((cmd & 0x80) == 0)// Read Run
                 {
-                    eax = m_input.ReadByte();
-                    if ((eax & 0x80) == 0)
-                    {
-                        if (eax == 0x7F)
-                            eax += (ushort)(m_input.ReadByte() | m_input.ReadByte() << 8);
-                        break;
-                    }
-                    int shift_index = eax >> shiftMask;
-                    
-                    eax &= countMask;
-                    if (eax == countMask)
-                        eax += (ushort)(m_input.ReadByte() | m_input.ReadByte() << 8);
+                    if (cmd == 0x7F)
+                        cmd += (ushort)(reader.ReadByte() | reader.ReadByte() << 8);
 
-                    count = (eax * byteDepth) + 3;
-                    if (pixels_remaining < count)
-                        throw new Exception("Invalid Pixel Data");
-                    pixels_remaining -= count;
-                    int shift = m_shiftTable[shift_index % m_shiftTable.Length];
-                    int shift_row = shift & 0x0f;
-                    shift >>= 4;
-                    shift_row *= (int)m_width;
-                    shift -= shift_row;
-                    shift *= byteDepth;
-                    if (shift >= 0 || data_pos + shift < 0)
-                        throw new Exception("Invalid Pixel Data");
-                    Binary.CopyOverlapped(m_pixelData, data_pos + shift, data_pos, count);
-                    data_pos += count;
+                    count = (cmd + 1) * byteDepth;
+
+                    if (count > pixelRemaining)
+                        throw new Exception("Decompress error: Pixel out of bounds");
+
+                    if (count != reader.Read(m_pixelData, dstPos, count))
+                        throw new Exception("Decompress error: Insufficient source data");
                 }
+                else // Copy Run
+                {
+
+                    count = cmd & countMask;
+                    if (count == countMask)
+                        count += (ushort)(reader.ReadByte() | reader.ReadByte() << 8);
+
+                    count = (count + countBase) * byteDepth;
+                    if (pixelRemaining < count)
+                        throw new Exception("Decompress error: Pixel out of bounds");
+
+                    // This 'copySourceAdvance' is always negative
+                    int copySourceAdvance = m_shiftTable[(cmd >> shiftStart) % m_shiftTable.Length];
+                    int shiftRow = copySourceAdvance & 0x0f;
+                    copySourceAdvance = (copySourceAdvance >> 4) - (shiftRow * (int)m_width);
+
+                    copySourceAdvance *= byteDepth;
+
+                    if (copySourceAdvance >= 0 || dstPos + copySourceAdvance < 0)
+                        throw new Exception("Decompress error: Shift param incorrect");
+
+                    Binary.CopyOverlapped(m_pixelData, dstPos + copySourceAdvance, dstPos, count);
+                }
+
+                pixelRemaining -= count;
+                dstPos += count;
             }
         }
 
 
         struct ChunkPosition
         {
-            public ushort Offset;
-            public ushort Length;
+            public int shiftIdx;
+            public int matchLen;
         }
 
-        public void Pack()
-        {
-            Debug.Assert(m_shiftTable != null);
-            Debug.Assert(m_pixelData != null);
+        readonly List<byte> m_buffer = new();
+        int m_bufferSize = 0;
 
-            const int MaxThunkSize = 0xffff + 0x7f;
-            const int MaxMatchSize = 0xffff;
+        // Pack pixels in m_pixelData, dst is m_rctRawData
+        protected void Pack()
+        {
+            Trace.Assert(m_shiftTable != null);
+            Trace.Assert(m_pixelData != null);
+            if (m_pixelData == null || m_shiftTable == null)
+            {
+                throw new Exception();
+            }
+
+            const int maxThunkSize = 0xffff + 0x7F;
+            const int maxMatchSize = 0xffff + 1;
 
             var shiftTable = new int[m_shiftTable.Length];
 
-            int factor = (int)m_bpp / 8;
-            var factorShift = 16 + (sbyte)~(8 + ((m_shiftTable.Length >> 5) * 4));
-            var factorShift2 = 3 - (m_shiftTable.Length >> 5);
+            int byteDepth = (int)m_bpp / 8;
+            var countMask = 16 + (sbyte)~(8 + ((m_shiftTable.Length >> 5) * 4));
+            var shiftStart = 3 - (m_shiftTable.Length >> 5);
+            var countBase = byteDepth == 1 ? 3 : 1;
+            var ignoreThreshold = byteDepth == 1 ? 2 : 0;
 
+            //InitShiftTable
             for (int i = 0; i < m_shiftTable.Length; ++i)
             {
                 int shift = m_shiftTable[i];
-                int shift_row = shift & 0x0f;
-                shift >>= 4;
-                shift_row *= (int)m_width;
-                shift -= shift_row;
-                shiftTable[i] = shift;
+                int shiftRow = shift & 0x0f;
+                shiftTable[i] = (shift >> 4) - (shiftRow * (int)m_width);
             }
 
             var ms = new MemoryStream();
             var bw = new BinaryWriter(ms);
 
-            List<byte> m_buffer = new();
-            int m_buffer_size = 0;
-
-
-            var current = 0;
-            for (int i = 0; i < factor; i++)
-                bw.Write(m_pixelData[current++]);
-
             m_buffer.Clear();
+            m_bufferSize = 0;
 
-            int last = m_pixelData.Length / factor;
-            current /= factor;
+            //First write a pixel
+            bw.Write(m_pixelData, 0, byteDepth);
+
+            int current = 1;
+            int last = m_pixelData.Length / byteDepth;
 
             while (current != last)
             {
-                var buf_end = Math.Min(current + MaxMatchSize, last);
-                ChunkPosition chunk_pos = new ChunkPosition { Offset = 0, Length = 0 };
-                for (int i = 0; i < m_shiftTable.Length; ++i)
+                var pos = new ChunkPosition { shiftIdx = 0, matchLen = 0 };
                 {
-                    int offset = current + shiftTable[i];
-                    if (offset < 0)
-                        continue;
-                    if (!ComparePixel(m_pixelData, offset, current, factor))
-                        continue;
-                    var first1 = current + 1;
-                    int first2 = offset + 1;
-                    while (first1 != buf_end && ComparePixel(m_pixelData, first1, first2, factor))
+                    int maxMatchIdx = Math.Min(current + maxMatchSize, last);
+                    //Run through all shifts to see which one is the longest one
+                    for (int i = 0; i < m_shiftTable.Length; ++i)
                     {
-                        ++first1;
-                        ++first2;
-                    }
-                    int weight = first2 - offset;
-                    if (weight > chunk_pos.Length)
-                    {
-                        chunk_pos.Offset = (ushort)i;
-                        chunk_pos.Length = (ushort)weight;
+                        int prevIdx = current + shiftTable[i];
+
+                        // There is not enough data before, skip
+                        if (prevIdx < 0)
+                            continue;
+
+                        // First pixel is not the same, skip
+                        if (!ComparePixel(m_pixelData, prevIdx, current, byteDepth))
+                            continue;
+
+                        // To see how long can it match, starting at the next pixel
+                        int searchForwardIdx = current + 1;
+                        int curPrevIdx = prevIdx + 1;
+                        while (searchForwardIdx != maxMatchIdx && ComparePixel(m_pixelData, curPrevIdx, searchForwardIdx, byteDepth))
+                        {
+                            searchForwardIdx++;
+                            curPrevIdx++;
+                        }
+
+                        int weight = curPrevIdx - prevIdx;
+                        if (weight > pos.matchLen)
+                        {
+                            pos.shiftIdx = i;
+                            pos.matchLen = weight;
+                        }
                     }
                 }
-
-                if (chunk_pos.Length > 0)
+                
+                // Determine run mode
+                if (pos.matchLen > ignoreThreshold)//Copy Run
                 {
-                    if (0 != m_buffer.Count)
+                    // This mode will write some cmd byte(s), before that, we need to clear the m_buffer if needed
+                    Flush(ref bw);
+
+                    // This maxAllowedCount is
+                    // 3 + 7(rc8) and 1 + 3(rct)
+                    // The countBase is the default pixel count that decompressor will added to count
+                    // When copy count is less than x(x: 3 in rct and 7 in rc8), it will be stored in cmd byte
+                    // countMask is used to extract this number inside cmd byte
+                    // 
+                    // copy command (rct):        copy command (rc8):
+                    // 1 sssss cc                 1 ssss ccc
+                    // +--------+                 +--------+
+                    //    1byte                      1byte
+                    // s: shift  c: count 
+                    // rct is using a bigger shift table so it needs one more bit to store position information
+                    int countThreshold = countBase + countMask;
+
+                    int cmd = (pos.shiftIdx << shiftStart) | 0x80;
+                    if (pos.matchLen >= countThreshold)
                     {
-                        if (m_buffer_size > 0x7f)
-                        {
-                            bw.Write((byte)0x7f);
-                            bw.Write((ushort)(m_buffer_size - 0x80));
-                        }
-                        else
-                            bw.Write((byte)(m_buffer_size - 1));
-                        foreach (var b in m_buffer)
-                            bw.Write(b);
-                        m_buffer.Clear();
-                        m_buffer_size = 0;
+                        cmd |= countMask;
+                        bw.Write((byte)cmd);
+                        bw.Write((ushort)(pos.matchLen - countThreshold));
                     }
-                    int code = (chunk_pos.Offset << factorShift2) | 0x80;
-                    if (chunk_pos.Length > factorShift)
-                        code |= factorShift;
                     else
-                        code |= chunk_pos.Length - 1;
-
-                    bw.Write((byte)code);
-                    if (chunk_pos.Length > factorShift)
-                        bw.Write((ushort)(chunk_pos.Length - 9));
-                    current += chunk_pos.Length;
-                }
-                else
-                {
-                    if (m_buffer.Count > 0 && MaxThunkSize == m_buffer_size)
                     {
-                        if (m_buffer_size > 0x7f)
-                        {
-                            bw.Write((byte)0x7f);
-                            bw.Write((ushort)(m_buffer_size - 0x80));
-                        }
-                        else
-                            bw.Write((byte)(m_buffer_size - 1));
-                        foreach (var b in m_buffer)
-                            bw.Write(b);
-                        m_buffer.Clear();
-                        m_buffer_size = 0;
+                        cmd |= pos.matchLen - countBase;
+                        bw.Write((byte)cmd);
                     }
-                    for(int i = 0; i < factor; i++)
-                        m_buffer.Add(m_pixelData[current * factor + i]);
-                    current++;
-                    ++m_buffer_size;
+                    
+                    current += pos.matchLen;
                 }
-            }
-            if (0 != m_buffer.Count)
-            {
-                if (m_buffer_size > 0x7f)
+                else//Read Run
                 {
-                    bw.Write((byte)0x7f);
-                    bw.Write((ushort)(m_buffer_size - 0x80));
+                    if (m_bufferSize == maxThunkSize)
+                    {
+                        Flush(ref bw);
+                    }
+
+                    for (int i = 0; i < byteDepth; i++)
+                    {
+                        m_buffer.Add(m_pixelData[current * byteDepth + i]);
+                    }
+                    current++;
+                    m_bufferSize++;
                 }
-                else
-                    bw.Write((byte)(m_buffer_size - 1));
-                foreach (var b in m_buffer)
-                    bw.Write(b);
-                m_buffer.Clear();
             }
+            Flush(ref bw);
 
             m_rctRawData = ms.ToArray();
         }
 
-        static bool ComparePixel(byte[] pixelData, int indexA, int indexB, int factor)
+        void Flush(ref BinaryWriter bw)
         {
-            indexA *= factor;
-            indexB *= factor;
-            for(int i = 0; i < factor; i++)
+            if (m_buffer.Count > 0)
+            {
+                if (m_bufferSize > 0x7f)
+                {
+                    bw.Write((byte)0x7f);
+                    bw.Write((ushort)(m_bufferSize - 0x80));
+                }
+                else
+                {
+                    bw.Write((byte)(m_bufferSize - 1));
+                }
+
+                foreach (var b in m_buffer)
+                {
+                    bw.Write(b);
+                }
+
+                m_buffer.Clear();
+                m_bufferSize = 0;
+            }
+        }
+
+        static bool ComparePixel(byte[] pixelData, int indexA, int indexB, int byteDepth)
+        {
+            indexA *= byteDepth;
+            indexB *= byteDepth;
+            for(int i = 0; i < byteDepth; i++)
             {
                 if (pixelData[indexA + i] != pixelData[indexB + i])
                     return false;
@@ -299,14 +352,14 @@ namespace MajiroRCT
                 -16, -32, -48, -64, -80, -96,  49,  33,
                  17,   1, -15, -31, -47,  50,  34,  18,
                   2, -14, -30, -46,  51,  35,  19,   3,
-                -13, -29, -45,  36,  20,   4, -12, -28,
+                -13, -29, -45,  36,  20,   4, -12, -28
             };
         }
 
-        public override bool OpenFromRCT(ref BinaryReader br, DelegateDoCrypt? crypt) 
+        public override bool FromRCT(ref BinaryReader br, DelegateDoCrypt? crypt = null) 
         {
             var isEnc = br.ReadByte() == 0x53;//TC or TS
-            Debug.Assert(br.ReadByte() == 0x30);
+            Trace.Assert(br.ReadByte() == 0x30);
             var version = br.ReadByte() - 0x30;
             if (version != 0)//Fixme: version == 1
                 throw new Exception("Invalid RCT version!");
@@ -314,7 +367,7 @@ namespace MajiroRCT
             m_width = br.ReadUInt32();
             m_height = br.ReadUInt32();
             var dataSize = br.ReadInt32();
-            Debug.Assert(dataSize > 0);
+            Trace.Assert(dataSize > 0);
             m_rctRawData = br.ReadBytes(dataSize);
 
             if(isEnc == true)
@@ -330,7 +383,11 @@ namespace MajiroRCT
 
         public override Image<Rgb24> GetImage()
         {
-            Debug.Assert(m_pixelData != null);
+            Trace.Assert(m_pixelData != null);
+            if (m_pixelData == null)
+            {
+                throw new Exception();
+            }
 
             var img = new Image<Rgb24>((int)m_width, (int)m_height);
 
@@ -344,6 +401,36 @@ namespace MajiroRCT
             }
 
             return img;
+        }
+
+        public override byte[] GetRCIamge(DelegateDoCrypt? crypt = null)
+        {
+            Trace.Assert(m_rctRawData != null);
+            if (m_rctRawData == null)
+            {
+                throw new Exception();
+            }
+
+            var ms = new MemoryStream();
+            var bw = new BinaryWriter(ms);
+
+            bw.Write(0x9A925A98);//六丁
+
+            if (crypt != null)
+            {
+                bw.Write(0x30305354);//TS00
+                crypt(ref m_rctRawData);
+            }
+            else
+            {
+                bw.Write(0x30304354);//TC00
+            }
+            
+            bw.Write(m_width);
+            bw.Write(m_height);
+            bw.Write(m_rctRawData.Length);
+            bw.Write(m_rctRawData);
+            return ms.ToArray();
         }
     }
 
@@ -361,11 +448,11 @@ namespace MajiroRCT
             m_shiftTable = new sbyte[]
             {
                 -16, -32, -48, -64,  49,  33,  17,   1,
-                -15, -31, -47,  34,  18,   2, -14, -30,
+                -15, -31, -47,  34,  18,   2, -14, -30
             };
         }
 
-        public override bool OpenFromRCT(ref BinaryReader br, DelegateDoCrypt? crypt)
+        public override bool FromRCT(ref BinaryReader br, DelegateDoCrypt? crypt = null)
         {
             br.BaseStream.Position += 3;//Seems no encryption
 
@@ -373,23 +460,26 @@ namespace MajiroRCT
             m_height = br.ReadUInt32();
             var dataSize = br.ReadInt32();
             var paletteData = br.ReadBytes(0x300);
-            Debug.Assert(paletteData.Length == 0x300);
+            Trace.Assert(paletteData.Length == 0x300);
 
             m_palette = new Rgb24[256];
             for(int i = 0; i < 256; i++)
                 m_palette[i] = new Rgb24(paletteData[i*3 + 1], paletteData[i*3 + 1], paletteData[i*3]);
 
-            Debug.Assert(dataSize > 0);
+            Trace.Assert(dataSize > 0);
             m_rctRawData = br.ReadBytes(dataSize);
             Unpack();
-
             return true;
         }
 
         public override Image<Rgb24> GetImage()
         {
-            Debug.Assert(m_palette != null);
-            Debug.Assert(m_pixelData != null);
+            Trace.Assert(m_palette != null);
+            Trace.Assert(m_pixelData != null);
+            if (m_pixelData == null || m_palette == null)
+            {
+                throw new Exception();
+            }
 
             var img = new Image<Rgb24>((int)m_width, (int)m_height);
 
@@ -402,6 +492,32 @@ namespace MajiroRCT
             }
 
             return img;
+        }
+
+        public override byte[] GetRCIamge(DelegateDoCrypt? crypt = null)
+        {
+            Trace.Assert(m_rctRawData != null);
+            if (m_rctRawData == null)
+            {
+                throw new Exception();
+            }
+
+            var ms = new MemoryStream();
+            var bw = new BinaryWriter(ms);
+
+            bw.Write(0x9A925A98);//六丁
+            bw.Write(0x30305F38);//8_00
+            bw.Write(m_width); 
+            bw.Write(m_height);
+            bw.Write(m_rctRawData.Length);
+            for(int i = 0; i < 256; i++)//palette
+            {
+                bw.Write((byte)i);
+                bw.Write((byte)i);
+                bw.Write((byte)i);
+            }
+            bw.Write(m_rctRawData); 
+            return ms.ToArray();
         }
     }
 
@@ -428,7 +544,7 @@ namespace MajiroRCT
             offset += 4;
             if (count <= 0 || count > data.Length - offset)
                 return;
-            Debug.Assert(Crc32.Table.Length == 0x100);
+            Trace.Assert(Crc32.Table.Length == 0x100);
             unsafe
             {
                 fixed (uint* table = Crc32.Table)
@@ -445,32 +561,33 @@ namespace MajiroRCT
             var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
             var br = new BinaryReader(fs);
 
-            Debug.Assert(br.ReadUInt32() == 0x9A925A98);//六丁
+            var magic = br.ReadUInt32();
+            Trace.Assert(magic == 0x9A925A98);//六丁
 
             var type = br.ReadByte();
             if (type == 0x38)//'8' -> RC8
             {
                 var ret = new RC8Image();
-                ret.OpenFromRCT(ref br, null);
+                ret.FromRCT(ref br);
 
                 return ret;
             }
             else if(type == 0x54) // 'T' -> RCT
             {
                 var ret = new RCTImage();
-                ret.OpenFromRCT(ref br, new DelegateDoCrypt(DoCrypt));
+                ret.FromRCT(ref br, new DelegateDoCrypt(DoCrypt));
 
                 return ret;
             }
             else
             {
-                throw new Exception("Unknown Image Format!");
+                throw new Exception($"Unknown Image Format: {type}");
             }
         }
 
         public void RCToPNG(string path)
         {
-            var rc8ImagePath = path.Replace(".rct", "_.rc8");
+            var rc8ImagePath = path.Replace(".rct", "_.rc8", StringComparison.OrdinalIgnoreCase);
             if(path != rc8ImagePath && File.Exists(rc8ImagePath))
             {
                 BlendRCTImages(OpenRCImage(path) as RCTImage, OpenRCImage(rc8ImagePath) as RC8Image).SaveAsPng(Path.ChangeExtension(path, "png"));
@@ -481,15 +598,83 @@ namespace MajiroRCT
             }
         }
 
-        Image<Bgra32> BlendRCTImages(RCTImage? rgbImage, RC8Image? alphaImage)
+        public void PNGToRC(string path)
         {
-            Debug.Assert(rgbImage != null && alphaImage != null);
-            Debug.Assert(rgbImage.m_height == alphaImage.m_height && rgbImage.m_width == alphaImage.m_width);
-            Debug.Assert(alphaImage.m_palette != null);
-            Debug.Assert(alphaImage.m_pixelData != null);
-            Debug.Assert(rgbImage.m_pixelData != null);
+            var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
+            var image = Image.Load(fs);
 
-            //var img = new Image<Rgba32>((int)rgbImage.m_width, (int)rgbImage.m_height);
+            // TODO: Add Encryption
+            switch (image.PixelType.BitsPerPixel)
+            {
+                case 24:
+                {
+                    var imageData = image.CloneAs<Rgb24>();
+                    var rctImage = new RCTImage();
+                    var pixels = new byte[imageData.Width * imageData.Height * 3];
+
+                    for (int y = 0; y < imageData.Height; y++)
+                    {
+                        for (int x = 0; x < imageData.Width; x++)
+                        {
+                            var index = (y * imageData.Width + x) * 3;
+                            var pixel = imageData[x, y];
+                            pixels[index + 2] = pixel.R;
+                            pixels[index + 1] = pixel.G;
+                            pixels[index + 0] = pixel.B;
+                        }
+                    }
+                    rctImage.FromPixels(pixels, (uint)imageData.Width, (uint)imageData.Height);
+                    File.WriteAllBytes(Path.ChangeExtension(path, "rct"), rctImage.GetRCIamge());
+                    break;
+                }
+                case 32:
+                {
+                    var imageData = image.CloneAs<Rgba32>();
+                    var rctImage = new RCTImage();
+                    var rc8Image = new RC8Image();
+                    var pixels = new byte[imageData.Width * imageData.Height * 3];
+                    var pixels_8 = new byte[imageData.Width * imageData.Height];
+
+                    for (int y = 0; y < imageData.Height; y++)
+                    {
+                        for (int x = 0; x < imageData.Width; x++)
+                        {
+                            var index = (y * imageData.Width + x);
+                            var pixel = imageData[x, y];
+                            pixels_8[index] = (byte)~pixel.A;
+                            index *= 3;
+                            pixels[index + 2] = pixel.R;
+                            pixels[index + 1] = pixel.G;
+                            pixels[index + 0] = pixel.B;
+                        }
+                    }
+                    rctImage.FromPixels(pixels, (uint)imageData.Width, (uint)imageData.Height);
+                    rc8Image.FromPixels(pixels_8, (uint)imageData.Width, (uint)imageData.Height);
+                    File.WriteAllBytes(Path.ChangeExtension(path, "rct"), rctImage.GetRCIamge());
+                    File.WriteAllBytes(path.Replace(".png", "_.rc8", StringComparison.OrdinalIgnoreCase), rc8Image.GetRCIamge());
+                    break;
+                }
+                default:
+                    throw new Exception("Unsuppored bpp");
+            }
+        }
+
+        static Image<Bgra32> BlendRCTImages(RCTImage? rgbImage, RC8Image? alphaImage)
+        {
+            Trace.Assert(rgbImage != null && alphaImage != null);
+            if (rgbImage == null || alphaImage == null)
+            {
+                throw new Exception();
+            }
+            Trace.Assert(rgbImage.m_height == alphaImage.m_height && rgbImage.m_width == alphaImage.m_width);
+            Trace.Assert(alphaImage.m_palette != null);
+            Trace.Assert(alphaImage.m_pixelData != null);
+            Trace.Assert(rgbImage.m_pixelData != null);
+            if (alphaImage.m_palette == null || alphaImage.m_pixelData == null || rgbImage.m_pixelData == null)
+            {
+                throw new Exception();
+            }
+
             var pixelData = new byte[rgbImage.m_width * rgbImage.m_height * 4];
 
             for (int y = 0; y < rgbImage.m_height; y++)
