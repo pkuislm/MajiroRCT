@@ -98,6 +98,14 @@ namespace MajiroRCT
                 Buffer.BlockCopy(data, src, data, dst, count);
             }
         }
+
+        public static void WriteUint32LE(ref byte[] dst, uint pos, uint val)
+        {
+            dst[pos + 3] = (byte)(val >> 24);
+            dst[pos + 2] = (byte)(val >> 16);
+            dst[pos + 1] = (byte)(val >> 8);
+            dst[pos + 0] = (byte)(val);
+        }
     }
 
     abstract class RCImage
@@ -560,11 +568,6 @@ namespace MajiroRCT
     class RCTFile
     {
         byte[]? m_imgKey;
-
-        public RCTFile() 
-        {
-
-        }
         
         public void SetPassword(string password)
         {
@@ -573,7 +576,7 @@ namespace MajiroRCT
             m_imgKey = new byte[0x400];
 
             for (uint i = 0; i < 0x100; ++i)
-                EndianHelper.WriteUint32LE(ref m_imgKey, i * 4, crc32 ^ Crc32.Table[(i + crc32) & 0xFF]);
+                Binary.WriteUint32LE(ref m_imgKey, i * 4, crc32 ^ Crc32.Table[(i + crc32) & 0xFF]);
         }
 
         bool DoCrypt(ref byte[] data)
@@ -774,17 +777,6 @@ namespace MajiroRCT
         public void Update(byte[] buf, int pos, int len)
         {
             m_crc = UpdateCrc(m_crc, buf, pos, len);
-        }
-    }
-
-    public class EndianHelper
-    {
-        public static void WriteUint32LE(ref byte[] dst, uint pos, uint val)
-        {
-            dst[pos + 3] = (byte)(val >> 24);
-            dst[pos + 2] = (byte)(val >> 16);
-            dst[pos + 1] = (byte)(val >> 8);
-            dst[pos + 0] = (byte)(val);
         }
     }
 }
