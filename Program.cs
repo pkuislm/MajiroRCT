@@ -15,27 +15,63 @@ namespace MajiroRCT
 
             if(args.Length < 2)
             {
-                Console.WriteLine("RCImageTool v0.1.\nUsage: \nExtract: RCImage.exe -e [RCFile]\nPack: RCImage.exe -p [PNGFile]");
+                Console.WriteLine("RCImageTool v0.2.\nUsage: \nExtract: RCImage.exe [-k [key]] -e [RCFiles]\nPack: RCImage.exe [-c -k [key]] -p [PNGFiles]");
                 return;
             }
 
-            switch(args[0])
+            List<string> extractList = new List<string>();
+            List<string> packList = new List<string>();
+            bool encrypt = false;
+            for(int i = 0; i < args.Length;)
             {
-                case "-e":
-                    rctFile.RCToPNG(args[1]);
-                    break;
-                case "-p":
-                    rctFile.PNGToRC(args[1]);
-                    break;
-                default: 
-                    Console.WriteLine($"Unknown arg: \"{args[0]}\"");
-                    break;
+                switch (args[i])
+                {
+                    case "-c":
+                        i++;
+                        encrypt = true;
+                        break;
+                    case "-k":
+                        rctFile.SetPassword(args[++i]);
+                        i++;
+                        break;
+                    case "-e":
+                        while (++i < args.Length)
+                        {
+                            if (args[i][0] == '-')
+                                break;
+                            extractList.Add(args[i]);
+                        }
+                        break;
+                    case "-p":
+                        while (++i < args.Length)
+                        {
+                            if (args[i][0] == '-')
+                                break;
+                            packList.Add(args[i]);
+                        }
+                        break;
+                    default:
+                        Console.WriteLine($"Unknown arg: \"{args[i]}\"");
+                        break;
+                }
+            }
+
+            foreach(var extract in extractList)
+            {
+                Console.WriteLine($"Converting {extract} to PNG...");
+                rctFile.RCToPNG(extract);
+            }
+
+            foreach (var pack in packList)
+            {
+                Console.WriteLine($"Converting {pack} to RC...");
+                rctFile.PNGToRC(pack, encrypt);
             }
         }
     }
 
 
-    public delegate void DelegateDoCrypt(ref byte[] data);
+    public delegate bool DelegateDoCrypt(ref byte[] data);
 
     public class Binary
     {
@@ -87,7 +123,7 @@ namespace MajiroRCT
 
         public abstract Image<Rgb24> GetImage();
 
-        public abstract byte[] GetRCIamge(DelegateDoCrypt? crypt);
+        public abstract byte[] GetRCIamge(DelegateDoCrypt? crypt, bool encrypt = false);
 
         protected void Unpack()
         {
@@ -375,7 +411,8 @@ namespace MajiroRCT
                 if (crypt == null)
                     throw new Exception("Missing Crypto Delegate");
 
-                crypt(ref m_rctRawData);
+                if (!crypt(ref m_rctRawData))
+                    throw new Exception("RCT is encrypted, please offer a key by adding '-k [password]' in args.");
             }
             Unpack();
             return true;
@@ -403,7 +440,7 @@ namespace MajiroRCT
             return img;
         }
 
-        public override byte[] GetRCIamge(DelegateDoCrypt? crypt = null)
+        public override byte[] GetRCIamge(DelegateDoCrypt? crypt = null, bool encrypt = false)
         {
             Trace.Assert(m_rctRawData != null);
             if (m_rctRawData == null)
@@ -416,10 +453,9 @@ namespace MajiroRCT
 
             bw.Write(0x9A925A98);//六丁
 
-            if (crypt != null)
-            {
+            if (crypt != null && encrypt && crypt(ref m_rctRawData))
+            {   
                 bw.Write(0x30305354);//TS00
-                crypt(ref m_rctRawData);
             }
             else
             {
@@ -494,7 +530,7 @@ namespace MajiroRCT
             return img;
         }
 
-        public override byte[] GetRCIamge(DelegateDoCrypt? crypt = null)
+        public override byte[] GetRCIamge(DelegateDoCrypt? crypt = null, bool encrypt = false)
         {
             Trace.Assert(m_rctRawData != null);
             if (m_rctRawData == null)
@@ -523,37 +559,36 @@ namespace MajiroRCT
 
     class RCTFile
     {
-        readonly byte[] m_imgKey;
+        byte[]? m_imgKey;
 
-        public RCTFile(string password = "chuable") 
+        public RCTFile() 
+        {
+
+        }
+        
+        public void SetPassword(string password)
         {
             byte[] bin_pass = Encoding.GetEncoding("shift_jis").GetBytes(password);
             uint crc32 = Crc32.Compute(bin_pass, 0, bin_pass.Length);
             m_imgKey = new byte[0x400];
 
             for (uint i = 0; i < 0x100; ++i)
-                EndianHelper.WriteUint32LE(ref m_imgKey, i*4, crc32 ^ Crc32.Table[(i + crc32) & 0xFF]);
+                EndianHelper.WriteUint32LE(ref m_imgKey, i * 4, crc32 ^ Crc32.Table[(i + crc32) & 0xFF]);
         }
-        
-        void DoCrypt(ref byte[] data)
+
+        bool DoCrypt(ref byte[] data)
         {
-            /*int offset = 0x1C + 8 * data.ToInt32(0x18);
-            if (offset < 0x1C || offset >= data.Length - 4)
-                return;
-            int count = data.ToInt32(offset);
-            offset += 4;
-            if (count <= 0 || count > data.Length - offset)
-                return;
-            Trace.Assert(Crc32.Table.Length == 0x100);
-            unsafe
+            //Trace.Assert(m_imgKey != null);
+            if(m_imgKey == null)
             {
-                fixed (uint* table = Crc32.Table)
-                {
-                    byte* key = (byte*)table;
-                    for (int i = 0; i < count; ++i)
-                        data[offset + i] ^= key[i & 0x3FF];
-                }
-            }*/
+                return false;
+            }
+
+            for (int i = 0; i < data.Length; ++i)
+            {
+                data[i] ^= m_imgKey[i & 0x3FF];
+            }
+            return true;
         }
 
         public RCImage OpenRCImage(string path)
@@ -598,12 +633,11 @@ namespace MajiroRCT
             }
         }
 
-        public void PNGToRC(string path)
+        public void PNGToRC(string path, bool encrypt = false)
         {
             var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
             var image = Image.Load(fs);
 
-            // TODO: Add Encryption
             switch (image.PixelType.BitsPerPixel)
             {
                 case 24:
@@ -624,7 +658,7 @@ namespace MajiroRCT
                         }
                     }
                     rctImage.FromPixels(pixels, (uint)imageData.Width, (uint)imageData.Height);
-                    File.WriteAllBytes(Path.ChangeExtension(path, "rct"), rctImage.GetRCIamge());
+                    File.WriteAllBytes(Path.ChangeExtension(path, "rct"), rctImage.GetRCIamge(new DelegateDoCrypt(DoCrypt), encrypt));
                     break;
                 }
                 case 32:
@@ -650,7 +684,7 @@ namespace MajiroRCT
                     }
                     rctImage.FromPixels(pixels, (uint)imageData.Width, (uint)imageData.Height);
                     rc8Image.FromPixels(pixels_8, (uint)imageData.Width, (uint)imageData.Height);
-                    File.WriteAllBytes(Path.ChangeExtension(path, "rct"), rctImage.GetRCIamge());
+                    File.WriteAllBytes(Path.ChangeExtension(path, "rct"), rctImage.GetRCIamge(new DelegateDoCrypt(DoCrypt), encrypt));
                     File.WriteAllBytes(path.Replace(".png", "_.rc8", StringComparison.OrdinalIgnoreCase), rc8Image.GetRCIamge());
                     break;
                 }
@@ -747,10 +781,10 @@ namespace MajiroRCT
     {
         public static void WriteUint32LE(ref byte[] dst, uint pos, uint val)
         {
-            dst[pos + 0] = (byte)(val >> 24);
-            dst[pos + 1] = (byte)(val >> 16);
-            dst[pos + 2] = (byte)(val >> 8);
-            dst[pos + 3] = (byte)(val);
+            dst[pos + 3] = (byte)(val >> 24);
+            dst[pos + 2] = (byte)(val >> 16);
+            dst[pos + 1] = (byte)(val >> 8);
+            dst[pos + 0] = (byte)(val);
         }
     }
 }
