@@ -1,4 +1,4 @@
-# MajiroRCT
+# MajiroRCImage
 
 转换Majiro的rct和rc8的工具  
 
@@ -21,10 +21,10 @@ rct和rc8均支持回封时压缩
 
 #### 范例
 + 解压图片（无密码）
-  + `MajiroImage.exe -e "E:\Game\ext\image.rct" "E:\Game\ext\image2.rct"`
+  + `MajiroRCImage.exe -e "E:\Game\ext\image.rct" "E:\Game\ext\image2.rct"`
 + 解压图片（有密码）
-  + `MajiroImage.exe -k "chuable" -e "E:\Game\ext\image.rct" "E:\Game\ext\image2.rct"`
+  + `MajiroRCImage.exe -k "chuable" -e "E:\Game\ext\image.rct" "E:\Game\ext\image2.rct"`
 + 回封图片（无密码）
-  + `MajiroImage.exe -p "E:\Game\ext\image.png" "E:\Game\ext\image2.png"`
+  + `MajiroRCImage.exe -p "E:\Game\ext\image.png" "E:\Game\ext\image2.png"`
 + 回封图片（有密码）
-  + `MajiroImage.exe -k "chuable" -c -p "E:\Game\ext\image.png" "E:\Game\ext\image2.png"`
+  + `MajiroRCImage.exe -k "chuable" -c -p "E:\Game\ext\image.png" "E:\Game\ext\image2.png"`
